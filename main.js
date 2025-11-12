@@ -796,7 +796,7 @@ function drawRangeSeries(chartG, dataset, xScale, yScales) {
         .attr("class", "range-line range-line--mean")
         .attr("fill", "none")
         .attr("stroke", metric.color)
-        .attr("stroke-width", 1.8)
+        .attr("stroke-width", 1)
         .attr("d", meanLine);
     }
   });
@@ -919,7 +919,7 @@ function drawGradientRangeSeries(
         .attr("class", "range-line range-line--mean")
         .attr("fill", "none")
         .attr("stroke", metric.color)
-        .attr("stroke-width", 1.8)
+        .attr("stroke-width", 1)
         .attr("d", meanLine);
     }
   });
