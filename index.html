@@ -6,7 +6,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
-    <title>Athens Weather Dashboard</title>
+    <title> Weather Historical </title>
     <link rel="stylesheet" href="styles.css" />
     <script
       src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"
@@ -19,7 +19,12 @@
     <main class="chart-wrapper">
       <section class="chart-panel">
         <div id="chart"></div>
-        <div id="tooltip" class="tooltip" hidden></div>
+        <div class="tooltip tooltip--primary" data-layer="primary" hidden></div>
+        <div
+          class="tooltip tooltip--secondary"
+          data-layer="secondary"
+          hidden
+        ></div>
       </section>
     </main>
 

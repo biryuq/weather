@@ -28,17 +28,33 @@ const METRIC_DEFS = [
     units: "%",
   },
   {
-    id: "wind",
-    label: "Wind Speed",
-    color: "#e377c2",
+    id: "windRange",
+    label: "Wind Range",
+    color: "#8e44ad",
     type: "range",
     axis: "wind",
     accessors: {
-      min: (d) => d.wind.min,
-      max: (d) => d.wind.max,
-      mean: (d) => d.wind.mean,
+      min: (d) => d.windRange?.min ?? null,
+      max: (d) => d.windRange?.max ?? null,
     },
     units: " km/h",
+    options: {
+      showMean: false,
+    },
+  },
+  {
+    id: "windGust",
+    label: "Wind Gust",
+    color: "#8547A0",
+    type: "line",
+    axis: "wind",
+    accessors: {
+      value: (d) => d.windGust ?? null,
+    },
+    units: " km/h",
+    options: {
+      strokeDasharray: "6 3",
+    },
   },
   {
     id: "precipitation",
@@ -54,7 +70,7 @@ const METRIC_DEFS = [
   {
     id: "daylight",
     label: "Daylight",
-    color: "#fdae6b",
+    color: "#D09F0C",
     type: "bar",
     axis: "daylight",
     accessors: {
@@ -73,6 +89,10 @@ const RANGE_GRADIENT_DEFS = {
   humidity: [
     { offset: "0%", color: "#8c564b", opacity: 0.3 },
     { offset: "100%", color: "#2ca02c", opacity: 0.7 },
+  ],
+  windRange: [
+    { offset: "0%", color: "#d2b4de", opacity: 0.25 },
+    { offset: "100%", color: "#8e44ad", opacity: 0.55 },
   ],
 };
 
@@ -124,7 +144,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 function attachControlHandlers() {
-  const checkboxes = document.querySelectorAll('[data-series]');
+  const checkboxes = document.querySelectorAll(
+    'input[type="checkbox"][data-series]'
+  );
   checkboxes.forEach((checkbox) => {
     const seriesId = checkbox.dataset.series;
     if (seriesId in seriesVisibility) {
@@ -157,9 +179,10 @@ function showError(error) {
 }
 
 async function fetchWeatherData() {
-  const [humidityResponse, weatherResponse] = await Promise.all([
+  const [humidityResponse, weatherResponse, windDailyResponse] = await Promise.all([
     fetch("humidity-daily.csv"),
     fetch("weather-day.csv"),
+    fetch("wind-daily.csv"),
   ]);
 
   if (!humidityResponse.ok) {
@@ -168,21 +191,29 @@ async function fetchWeatherData() {
   if (!weatherResponse.ok) {
     throw new Error(`Failed to load weather data (${weatherResponse.status})`);
   }
+  if (!windDailyResponse.ok) {
+    throw new Error(`Failed to load wind data (${windDailyResponse.status})`);
+  }
 
-  const [humidityText, weatherText] = await Promise.all([
+  const [humidityText, weatherText, windDailyText] = await Promise.all([
     humidityResponse.text(),
     weatherResponse.text(),
+    windDailyResponse.text(),
   ]);
 
   return {
     humidity: parseHumidityDailyCsv(humidityText),
     weather: parseWeatherDailyCsv(weatherText),
+    windDaily: parseWindDailyCsv(windDailyText),
   };
 }
 
 function transformWeatherData(raw) {
   const humidityByDate = new Map(
     (raw.humidity || []).map((entry) => [entry.date, entry])
+  );
+  const windDailyByDate = new Map(
+    (raw.windDaily || []).map((entry) => [entry.date, entry])
   );
 
   const results = (raw.weather || []).map((day) => {
@@ -197,23 +228,10 @@ function transformWeatherData(raw) {
     const tempMax = day.temperatureMax;
     const tempMean = computeMean([tempMin, tempMax]);
 
-    const windSpeedMax = day.windSpeedMax;
-    const windGustMax = day.windGustMax ?? windSpeedMax;
-    const windMin =
-      typeof day.windSpeedMin === "number" ? day.windSpeedMin : windSpeedMax;
-    const windMean =
-      typeof day.windSpeedMean === "number"
-        ? day.windSpeedMean
-        : computeMean(
-            [windMin, windSpeedMax, windGustMax].filter(
-              (v) => typeof v === "number"
-            )
-          );
-
-    const wind = {
-      min: windMin,
-      mean: windMean,
-      max: windGustMax,
+    const windDaily = windDailyByDate.get(day.date) ?? { min: null, max: null };
+    const windRange = {
+      min: windDaily.min ?? null,
+      max: windDaily.max ?? null,
     };
 
     return {
@@ -225,7 +243,8 @@ function transformWeatherData(raw) {
         mean: tempMean,
       },
       humidity,
-      wind,
+      windRange,
+      windGust: typeof day.windGustMax === "number" ? day.windGustMax : null,
       precipitation: day.precipitationSum,
       daylightHours:
         typeof day.sunshineSeconds === "number"
@@ -259,6 +278,15 @@ function parseWeatherDailyCsv(text) {
     windSpeedMean: parseNumber(row["wind_speed_10m_mean (km/h)"]),
     windSpeedMax: parseNumber(row["wind_speed_10m_max (km/h)"]),
     windGustMax: parseNumber(row["wind_gusts_10m_max (km/h)"]),
+  }));
+}
+
+function parseWindDailyCsv(text) {
+  const dataSection = extractDataSection(text, "date,");
+  return d3.csvParse(dataSection, (row) => ({
+    date: row.date,
+    min: parseNumber(row.wind_speed_min_km_h),
+    max: parseNumber(row.wind_speed_max_km_h),
   }));
 }
 
@@ -301,11 +329,11 @@ function setupChart(dataset) {
   const chartContainer = document.getElementById("chart");
   if (!chartContainer) return;
 
-  const legend = buildLegend(chartContainer);
+  const legends = buildLegends(chartContainer);
 
   const chart = {
     container: chartContainer,
-    legend,
+    legends,
     dataset,
   };
 
@@ -317,36 +345,94 @@ function setupChart(dataset) {
   resizeObserver.observe(chartContainer);
 }
 
-function buildLegend(chartContainer) {
-  let legend = chartContainer.querySelector(".legend");
-  if (!legend) {
-    legend = document.createElement("div");
-    legend.className = "legend";
-    chartContainer.appendChild(legend);
+function buildLegends(chartContainer) {
+  const ensureLegend = (modifier) => {
+    let legend = chartContainer.querySelector(`.legend--${modifier}`);
+    if (!legend) {
+      legend = document.createElement("div");
+      legend.className = `legend legend--${modifier}`;
+      chartContainer.appendChild(legend);
+    }
+    return legend;
+  };
+
+  const legends = {
+    primary: ensureLegend("primary"),
+    secondary: ensureLegend("secondary"),
+  };
+
+  const renderLegendContent = (legend) => {
+    legend.innerHTML = "";
+    METRIC_DEFS.forEach((metric) => {
+      const item = document.createElement("button");
+      item.className = "legend-item";
+      item.dataset.series = metric.id;
+      item.style.setProperty("--series-color", metric.color);
+      item.textContent = metric.label;
+      item.addEventListener("click", () => {
+        seriesVisibility[metric.id] = !seriesVisibility[metric.id];
+        updateSeriesVisibility();
+      });
+      legend.appendChild(item);
+    });
+  };
+
+  Object.values(legends).forEach(renderLegendContent);
+
+  return legends;
+}
+
+function positionLegends(chart) {
+  if (!chart || !chart.legends) {
+    return;
+  }
+  const { container, legends } = chart;
+  const primaryLayer = container.querySelector(".chart-layer--primary");
+  const secondaryLayer = container.querySelector(".chart-layer--secondary");
+
+  if (primaryLayer && legends.primary) {
+    container.insertBefore(legends.primary, primaryLayer);
   }
 
-  legend.innerHTML = "";
+  if (secondaryLayer && legends.secondary) {
+    container.insertBefore(legends.secondary, secondaryLayer);
+  }
+}
 
-  METRIC_DEFS.forEach((metric) => {
-    const item = document.createElement("button");
-    item.className = "legend-item";
-    item.dataset.series = metric.id;
-    item.style.setProperty("--series-color", metric.color);
-    item.textContent = metric.label;
-    item.addEventListener("click", () => {
-      seriesVisibility[metric.id] = !seriesVisibility[metric.id];
-      const checkbox = document.querySelector(
-        `[data-series="${metric.id}"]`
-      );
-      if (checkbox) {
-        checkbox.checked = seriesVisibility[metric.id];
-      }
-      updateSeriesVisibility();
-    });
-    legend.appendChild(item);
+function getTooltipMap(container) {
+  const map = new Map();
+  const root =
+    (container && (container.closest(".chart-panel") || container.parentElement)) ||
+    document;
+  const tooltips = root.querySelectorAll(".tooltip");
+  tooltips.forEach((tooltip, index) => {
+    const key = tooltip.dataset.layer || (index === 0 ? "primary" : "");
+    if (key) {
+      map.set(key, tooltip);
+    } else {
+      map.set(`tooltip-${index}`, tooltip);
+    }
   });
+  if (!map.has("primary") && tooltips[0]) {
+    map.set("primary", tooltips[0]);
+  }
+  if (!map.has("secondary") && tooltips[1]) {
+    map.set("secondary", tooltips[1]);
+  }
+  return map;
+}
 
-  return legend;
+function computeLayerTopOffset(ctx, container) {
+  if (!ctx?.svg || !container) {
+    return 0;
+  }
+  const svgElement = ctx.svg.node ? ctx.svg.node() : null;
+  if (!svgElement) {
+    return 0;
+  }
+  const containerRect = container.getBoundingClientRect();
+  const svgRect = svgElement.getBoundingClientRect();
+  return Math.max(0, svgRect.top - containerRect.top);
 }
 
 function renderChart(chart) {
@@ -426,6 +512,7 @@ function renderChart(chart) {
         drawGrid(chartG, innerWidth, innerHeight, xScale);
         drawBars(chartG, dataset, xScale, yScales, innerHeight, innerWidth);
         drawRangeSeries(chartG, dataset, xScale, yScales);
+        drawLineSeries(chartG, dataset, xScale, yScales);
         return {
           chartG,
           innerHeight,
@@ -468,6 +555,7 @@ function renderChart(chart) {
           gradientInnerHeight,
           { layerKey: "secondary" }
         );
+        drawLineSeries(chartG, dataset, xScale, gradientYScales);
         return {
           chartG,
           innerHeight: gradientInnerHeight,
@@ -516,7 +604,9 @@ function renderChart(chart) {
     }
   });
 
-  setupLayerInteractions(layerContexts, dataset, xScale, margin);
+  positionLegends(chart);
+
+  setupLayerInteractions(layerContexts, dataset, xScale, margin, chart);
 
   container.classList.remove("loading");
   container.removeAttribute("aria-busy");
@@ -535,11 +625,12 @@ function computeGroupDomains(dataset) {
     d.humidity.mean,
     d.humidity.max,
   ]);
-  const windValues = dataset.flatMap((d) => [
-    d.wind.min,
-    d.wind.mean,
-    d.wind.max,
+  const windRangeValues = dataset.flatMap((d) => [
+    d.windRange?.min ?? null,
+    d.windRange?.max ?? null,
   ]);
+  const windGustValues = dataset.map((d) => d.windGust ?? null);
+  const windValues = [...windRangeValues, ...windGustValues];
   const precipitationValues = dataset.map((d) => d.precipitation);
   const daylightValues = dataset.map((d) => d.daylightHours);
 
@@ -783,7 +874,10 @@ function drawRangeSeries(chartG, dataset, xScale, yScales) {
       .attr("stroke-dasharray", "4 3")
       .attr("d", maxLine);
 
-    if (metric.id !== "wind") {
+    const showMeanLine =
+      typeof metric.accessors.mean === "function" &&
+      metric.options?.showMean !== false;
+    if (showMeanLine) {
       const meanLine = d3
         .line()
         .defined((d) => typeof metric.accessors.mean(d) === "number")
@@ -798,6 +892,37 @@ function drawRangeSeries(chartG, dataset, xScale, yScales) {
         .attr("stroke", metric.color)
         .attr("stroke-width", 1)
         .attr("d", meanLine);
+    }
+  });
+}
+
+function drawLineSeries(chartG, dataset, xScale, yScales) {
+  const linesGroup = chartG.append("g").attr("class", "series-lines");
+
+  METRIC_DEFS.filter((def) => def.type === "line").forEach((metric) => {
+    const scale = yScales[metric.axis];
+    if (!scale || typeof metric.accessors.value !== "function") {
+      return;
+    }
+
+    const lineGenerator = d3
+      .line()
+      .defined((d) => typeof metric.accessors.value(d) === "number")
+      .x((d) => xScale(d.date))
+      .y((d) => scale(metric.accessors.value(d)));
+
+    const path = linesGroup
+      .append("path")
+      .datum(dataset)
+      .attr("class", `series series--line series--${metric.id}`)
+      .attr("data-series", metric.id)
+      .attr("fill", "none")
+      .attr("stroke", metric.color)
+      .attr("stroke-width", 1.5)
+      .attr("d", lineGenerator);
+
+    if (metric.options?.strokeDasharray) {
+      path.attr("stroke-dasharray", metric.options.strokeDasharray);
     }
   });
 }
@@ -906,7 +1031,10 @@ function drawGradientRangeSeries(
       .attr("stroke-dasharray", "4 3")
       .attr("d", maxLine);
 
-    if (metric.id !== "wind") {
+    const showMeanLine =
+      typeof metric.accessors.mean === "function" &&
+      metric.options?.showMean !== false;
+    if (showMeanLine) {
       const meanLine = d3
         .line()
         .defined((d) => typeof metric.accessors.mean(d) === "number")
@@ -925,13 +1053,14 @@ function drawGradientRangeSeries(
   });
 }
 
-function setupLayerInteractions(layerContexts, dataset, xScale, margin) {
+function setupLayerInteractions(layerContexts, dataset, xScale, margin, chart) {
   if (!layerContexts.length) {
     return;
   }
 
-  const tooltipEl = document.getElementById("tooltip");
+  const tooltipMap = getTooltipMap(chart?.container);
   const bisect = d3.bisector((d) => d.date).center;
+  const contextByKey = new Map(layerContexts.map((ctx) => [ctx.key, ctx]));
 
   const focusLayers = layerContexts.map((ctx) =>
     createFocusLayer(ctx.chartG, xScale, ctx.yScales, ctx.innerHeight, ctx.key)
@@ -943,7 +1072,24 @@ function setupLayerInteractions(layerContexts, dataset, xScale, margin) {
     const index = bisect(dataset, date);
     const datum = dataset[Math.max(0, Math.min(dataset.length - 1, index))];
 
-    updateTooltip(datum, { x }, { margin, innerHeight: ctx.innerHeight }, tooltipEl);
+    tooltipMap.forEach((tooltipEl, key) => {
+      if (!tooltipEl) return;
+      const targetCtx = contextByKey.get(key) || ctx;
+      const layerTop = computeLayerTopOffset(targetCtx, chart?.container);
+      const targetInnerHeight = targetCtx?.innerHeight ?? ctx.innerHeight;
+      updateTooltip(
+        datum,
+        { x },
+        {
+          margin,
+          innerHeight: targetInnerHeight,
+          layerKey: key,
+          layerTop,
+          container: chart?.container,
+        },
+        tooltipEl
+      );
+    });
 
     focusLayers.forEach((layer) => {
       layer.show();
@@ -952,9 +1098,11 @@ function setupLayerInteractions(layerContexts, dataset, xScale, margin) {
   };
 
   const handleLeave = () => {
-    if (tooltipEl) {
-      tooltipEl.hidden = true;
-    }
+    tooltipMap.forEach((tooltip) => {
+      if (tooltip) {
+        tooltip.hidden = true;
+      }
+    });
     focusLayers.forEach((layer) => layer.hide());
   };
 
@@ -985,7 +1133,10 @@ function createFocusLayer(chartG, xScale, yScales, innerHeight, layerKey) {
     if (!scale) return;
 
     const stats = ["min", "max"];
-    if (metric.id !== "wind" && typeof metric.accessors.mean === "function") {
+    const hasMean =
+      typeof metric.accessors.mean === "function" &&
+      metric.options?.showMean !== false;
+    if (hasMean) {
       stats.push("mean");
     }
 
@@ -1008,6 +1159,32 @@ function createFocusLayer(chartG, xScale, yScales, innerHeight, layerKey) {
         accessor,
         scale,
       });
+    });
+  });
+
+  METRIC_DEFS.filter((def) => def.type === "line").forEach((metric) => {
+    const scale = yScales[metric.axis];
+    if (!scale || typeof metric.accessors.value !== "function") {
+      return;
+    }
+    const circle = focusGroup
+      .append("circle")
+      .attr(
+        "class",
+        `focus-point focus-point--${metric.id} focus-point--value`
+      )
+      .attr("r", 4)
+      .attr("fill", metric.color)
+      .attr("stroke", "#ffffff")
+      .attr("stroke-width", 1.5)
+      .attr("data-series", metric.id)
+      .attr("pointer-events", "none");
+    focusPoints.push({
+      metricId: metric.id,
+      stat: "value",
+      circle,
+      accessor: metric.accessors.value,
+      scale,
     });
   });
 
@@ -1043,7 +1220,7 @@ function createFocusLayer(chartG, xScale, yScales, innerHeight, layerKey) {
 function updateTooltip(datum, pointer, layout, tooltipEl) {
   if (!tooltipEl || !datum) return;
   const { x } = pointer;
-  const { margin, innerHeight } = layout;
+  const { margin, layerTop = 0 } = layout;
 
   const activeMetrics = METRIC_DEFS.filter(
     (metric) => seriesVisibility[metric.id]
@@ -1051,9 +1228,15 @@ function updateTooltip(datum, pointer, layout, tooltipEl) {
   const lines = activeMetrics
     .map((metric) => {
       if (metric.type === "range") {
-        const min = metric.accessors.min(datum);
-        const max = metric.accessors.max(datum);
-        const mean = metric.accessors.mean(datum);
+        const minAccessor = metric.accessors.min;
+        const maxAccessor = metric.accessors.max;
+        const meanAccessor = metric.accessors.mean;
+        const min =
+          typeof minAccessor === "function" ? minAccessor(datum) : null;
+        const max =
+          typeof maxAccessor === "function" ? maxAccessor(datum) : null;
+        const mean =
+          typeof meanAccessor === "function" ? meanAccessor(datum) : null;
 
         const meanStr = formatValue(mean, metric.units);
         const minStr = formatValue(min, metric.units);
@@ -1089,6 +1272,21 @@ function updateTooltip(datum, pointer, layout, tooltipEl) {
         </span>`;
       }
 
+      if (metric.type === "line") {
+        const accessor = metric.accessors.value;
+        if (typeof accessor !== "function") {
+          return null;
+        }
+        const value = accessor(datum);
+        const valueStr = formatValue(value, metric.units);
+        if (!valueStr) {
+          return null;
+        }
+        return `<span class="tooltip-series" style="--series-color:${metric.color}">
+          ${metric.label}: <strong>${valueStr}</strong>
+        </span>`;
+      }
+
       return null;
     })
     .filter(Boolean)
@@ -1101,16 +1299,20 @@ function updateTooltip(datum, pointer, layout, tooltipEl) {
 
   tooltipEl.hidden = false;
 
-  const containerRect = document
-    .getElementById("chart")
-    .getBoundingClientRect();
+  const container =
+    layout.container || document.getElementById("chart") || tooltipEl.parentElement;
+  if (!container) {
+    return;
+  }
+  const containerRect = container.getBoundingClientRect();
   const tooltipWidth = tooltipEl.offsetWidth || 200;
   const left = Math.min(
     containerRect.width - tooltipWidth - 16,
     Math.max(16, margin.left + x + 12)
   );
   tooltipEl.style.left = `${left}px`;
-  tooltipEl.style.top = `${margin.top + 16}px`;
+  const top = Math.max(0, layerTop + 16);
+  tooltipEl.style.top = `${top}px`;
 }
 
 function updateSeriesVisibility() {
