@@ -29,18 +29,16 @@ const METRIC_DEFS = [
   },
   {
     id: "windRange",
-    label: "Wind Range",
+    label: "Wind",
     color: "#8e44ad",
     type: "range",
     axis: "wind",
     accessors: {
       min: (d) => d.windRange?.min ?? null,
       max: (d) => d.windRange?.max ?? null,
+      mean: (d) => d.windRange?.mean ?? null,
     },
     units: " km/h",
-    options: {
-      showMean: false,
-    },
   },
   {
     id: "windGust",
@@ -78,6 +76,17 @@ const METRIC_DEFS = [
     },
     units: " h",
   },
+  {
+    id: "windDirection",
+    label: "Wind Direction",
+    color: "#002129",
+    type: "windDirection",
+    axis: null,
+    accessors: {
+      value: (d) => d.windDirection,
+    },
+    units: "°",
+  },
 ];
 
 const RANGE_GRADIENT_DEFS = {
@@ -110,6 +119,189 @@ const seriesVisibility = METRIC_DEFS.reduce((acc, def) => {
   acc[def.id] = DEFAULT_VISIBLE_SERIES.has(def.id);
   return acc;
 }, {});
+
+// 5 main categories that can be selected (max 3)
+const MAIN_CATEGORIES = new Set(["temperature", "humidity", "precipitation", "wind", "daylight"]);
+
+// Wind sub-values that can be toggled individually when wind is selected
+// Note: windRange and windDirection are combined (toggle together)
+const WIND_SUB_VALUES = new Set(["windRange", "windGust", "windDirection"]);
+const WIND_RANGE_GROUP = new Set(["windRange", "windDirection"]); // These toggle together
+
+// Map main category to its sub-metrics
+const CATEGORY_TO_METRICS = {
+  temperature: ["temperature"],
+  humidity: ["humidity"],
+  precipitation: ["precipitation"],
+  wind: ["windRange", "windGust", "windDirection"],
+  daylight: ["daylight"],
+};
+
+// Track selection order for axis assignment (stores main category IDs)
+let selectionOrder = [];
+
+// Get the main category for a metric
+function getMainCategory(metricId) {
+  for (const [category, metrics] of Object.entries(CATEGORY_TO_METRICS)) {
+    if (metrics.includes(metricId)) {
+      return category;
+    }
+  }
+  return null;
+}
+
+// Get all selected main categories
+function getSelectedMainCategories() {
+  const selected = new Set();
+  METRIC_DEFS.forEach((metric) => {
+    if (seriesVisibility[metric.id]) {
+      const category = getMainCategory(metric.id);
+      if (category) {
+        selected.add(category);
+      }
+    }
+  });
+  return Array.from(selected);
+}
+
+// Get the count of selected main categories
+function getMainCategoryCount() {
+  return getSelectedMainCategories().length;
+}
+
+// Check if a main category is selected
+function isMainCategorySelected(categoryId) {
+  const metrics = CATEGORY_TO_METRICS[categoryId] || [];
+  return metrics.some(metricId => seriesVisibility[metricId]);
+}
+
+// Check if a metric can be selected (not at max 3 categories)
+function canSelectMetric(metricId) {
+  const mainCategory = getMainCategory(metricId);
+  if (!mainCategory) return false;
+  
+  // windDirection is hidden from legend and always toggles with windRange
+  if (metricId === "windDirection") {
+    return false; // Hidden from legend
+  }
+  
+  const isWindSubValue = WIND_SUB_VALUES.has(metricId);
+  const currentMainCategoryCount = getMainCategoryCount();
+  
+  // If already selected, can always deselect
+  if (seriesVisibility[metricId]) {
+    return true;
+  }
+  
+  // Wind gust can only be selected if wind category is already selected
+  if (metricId === "windGust") {
+    return isMainCategorySelected("wind");
+  }
+  
+  // Other wind sub-values (windRange/windDirection) can be selected if wind category is already selected
+  if (isWindSubValue && isMainCategorySelected("wind")) {
+    return true;
+  }
+  
+  // If at max 3 categories and this is a new category, can't select
+  if (currentMainCategoryCount >= 3 && !isMainCategorySelected(mainCategory)) {
+    return false;
+  }
+  
+  return true;
+}
+
+// Check if a metric should be drawn on the chart (max 3 selections, max 2 axes)
+function shouldDrawMetric(metricId) {
+  // Max 3 values on graph (wind direction is special, doesn't count)
+  if (selectionOrder.length === 0) return false;
+  
+  const mainCategory = getMainCategory(metricId);
+  if (!mainCategory) return false;
+  
+  // Check if this metric is selected
+  if (!seriesVisibility[metricId]) return false;
+  
+  const first = selectionOrder[0];
+  const second = selectionOrder.length >= 2 ? selectionOrder[1] : null;
+  const third = selectionOrder.length >= 3 ? selectionOrder[2] : null;
+  
+  // Wind direction is special - it's drawn at top when wind is selected (doesn't count toward 3)
+  if (metricId === "windDirection") {
+    return (first === "wind" || second === "wind" || third === "wind");
+  }
+  
+  // Draw if metric's category is in first, second, or third selection
+  if (first === mainCategory || second === mainCategory || third === mainCategory) {
+    if (mainCategory === "wind") {
+      // For wind, check if this specific sub-value is selected
+      return true;
+    } else {
+      const metric = METRIC_DEFS.find(m => m.id === metricId);
+      // Only draw if it has an axis (windDirection doesn't have an axis)
+      return metric && metric.axis !== null;
+    }
+  }
+  
+  return false;
+}
+
+// Get which axis scale a metric should use for drawing
+// First selection → left axis, Second → right axis, Third → right axis scale (no axis displayed)
+function getMetricAxis(metricId) {
+  const mainCategory = getMainCategory(metricId);
+  if (!mainCategory) return null;
+  
+  const first = selectionOrder[0];
+  const second = selectionOrder.length >= 2 ? selectionOrder[1] : null;
+  const third = selectionOrder.length >= 3 ? selectionOrder[2] : null;
+  
+  // First selection uses left axis
+  if (first === mainCategory) {
+    const metric = METRIC_DEFS.find(m => m.id === metricId);
+    if (metric && metric.axis) {
+      return { axis: metric.axis, side: "left" };
+    }
+    if (mainCategory === "wind") {
+      return { axis: "wind", side: "left" };
+    }
+  }
+  
+  // Second selection uses right axis
+  if (second === mainCategory) {
+    const metric = METRIC_DEFS.find(m => m.id === metricId);
+    if (metric && metric.axis) {
+      return { axis: metric.axis, side: "right" };
+    }
+    if (mainCategory === "wind") {
+      return { axis: "wind", side: "right" };
+    }
+  }
+  
+  // Third selection uses right axis scale (from second selection if same type, or its own scale)
+  // But it doesn't get its own axis displayed
+  if (third === mainCategory) {
+    const metric = METRIC_DEFS.find(m => m.id === metricId);
+    if (metric && metric.axis) {
+      // Check if second selection has the same axis type
+      const secondMetric = METRIC_DEFS.find(m => m.id === second);
+      const secondAxis = secondMetric && secondMetric.axis ? secondMetric.axis : (second === "wind" ? "wind" : null);
+      
+      // If same axis type, reuse second's scale; otherwise use own scale
+      if (metric.axis === secondAxis) {
+        return { axis: metric.axis, side: "right" };
+      } else {
+        // Use its own scale but on right side (no axis displayed)
+        return { axis: metric.axis, side: "right" };
+      }
+    }
+    if (mainCategory === "wind") {
+      return { axis: "wind", side: "right" };
+    }
+  }
+  
+  return null;
+}
 
 const BASE_MARGINS = {
   top: 50,
@@ -147,13 +339,16 @@ function attachControlHandlers() {
   const checkboxes = document.querySelectorAll(
     'input[type="checkbox"][data-series]'
   );
+  
+  // Initialize selection order with default visible series
+  selectionOrder = ["temperature"];
+  
   checkboxes.forEach((checkbox) => {
     const seriesId = checkbox.dataset.series;
     if (seriesId in seriesVisibility) {
       checkbox.checked = !!seriesVisibility[seriesId];
       checkbox.addEventListener("change", () => {
-        seriesVisibility[seriesId] = checkbox.checked;
-        updateSeriesVisibility();
+        handleMetricToggle(seriesId, checkbox.checked);
       });
     }
   });
@@ -161,15 +356,145 @@ function attachControlHandlers() {
   const resetBtn = document.getElementById("resetSelections");
   if (resetBtn) {
     resetBtn.addEventListener("click", () => {
+      // Reset to just temperature
       Object.keys(seriesVisibility).forEach((id) => {
-        seriesVisibility[id] = true;
+        seriesVisibility[id] = id === "temperature";
       });
+      selectionOrder = ["temperature"];
       checkboxes.forEach((checkbox) => {
-        checkbox.checked = true;
+        checkbox.checked = checkbox.dataset.series === "temperature";
       });
       updateSeriesVisibility();
     });
   }
+}
+
+function handleMetricToggle(metricId, isChecked) {
+  const mainCategory = getMainCategory(metricId);
+  if (!mainCategory) return;
+  
+  const isWindSubValue = WIND_SUB_VALUES.has(metricId);
+  const currentMainCategoryCount = getMainCategoryCount();
+  
+  if (isChecked) {
+    if (isWindSubValue) {
+      // Toggling a wind sub-value - check if wind category is already selected
+      const windSelected = isMainCategorySelected("wind");
+      if (!windSelected) {
+        // Can't select wind sub-values if wind category isn't selected
+        // First check if we can add wind as a main category
+        if (currentMainCategoryCount >= 3) {
+          const checkbox = document.querySelector(`input[data-series="${metricId}"]`);
+          if (checkbox) {
+            checkbox.checked = false;
+          }
+          return;
+        }
+        // Add wind category to selection order
+        if (!selectionOrder.includes("wind")) {
+          selectionOrder.push("wind");
+        }
+      }
+      
+      // If windRange or windDirection, toggle both together
+      if (WIND_RANGE_GROUP.has(metricId)) {
+        WIND_RANGE_GROUP.forEach((id) => {
+          seriesVisibility[id] = true;
+        });
+      } else if (metricId === "windGust") {
+        // Wind gust can only be selected if wind category is already selected
+        if (isMainCategorySelected("wind")) {
+          seriesVisibility[metricId] = true;
+        } else {
+          // Prevent selection if wind is not selected
+          const checkbox = document.querySelector(`input[data-series="${metricId}"]`);
+          if (checkbox) {
+            checkbox.checked = false;
+          }
+          return;
+        }
+      }
+    } else {
+      // Toggling a main category metric
+      if (currentMainCategoryCount >= 3 && !isMainCategorySelected(mainCategory)) {
+        // Can't add more main categories
+        const checkbox = document.querySelector(`input[data-series="${metricId}"]`);
+        if (checkbox) {
+          checkbox.checked = false;
+        }
+        return;
+      }
+      
+      // Add to selection order if it's a new category
+      if (!selectionOrder.includes(mainCategory)) {
+        selectionOrder.push(mainCategory);
+      }
+      
+      // Enable the metric
+      seriesVisibility[metricId] = true;
+      
+      // Note: wind sub-values are not auto-enabled when selecting a non-wind metric
+    }
+  } else {
+    // Unchecking
+    if (isWindSubValue) {
+      // If windRange or windDirection, uncheck both together
+      if (WIND_RANGE_GROUP.has(metricId)) {
+        WIND_RANGE_GROUP.forEach((id) => {
+          seriesVisibility[id] = false;
+        });
+        // When windRange is unchecked, also uncheck windGust
+        seriesVisibility["windGust"] = false;
+        const windGustCheckbox = document.querySelector(`input[data-series="windGust"]`);
+        if (windGustCheckbox) {
+          windGustCheckbox.checked = false;
+        }
+      } else if (metricId === "windGust") {
+        // For windGust, just uncheck it
+        seriesVisibility[metricId] = false;
+      }
+      
+      // Check if all wind sub-values are now unchecked
+      const allWindUnchecked = Array.from(WIND_SUB_VALUES).every(
+        id => !seriesVisibility[id]
+      );
+      
+      if (allWindUnchecked) {
+        // Remove wind from selection order
+        const windIndex = selectionOrder.indexOf("wind");
+        if (windIndex !== -1) {
+          selectionOrder.splice(windIndex, 1);
+        }
+      }
+    } else {
+      // Unchecking a main category metric
+      seriesVisibility[metricId] = false;
+      
+      // If it's wind category, disable all wind sub-values (including windGust)
+      if (mainCategory === "wind") {
+        // Deselect all wind sub-values
+        WIND_SUB_VALUES.forEach((id) => {
+          seriesVisibility[id] = false;
+        });
+        // Ensure windGust is deselected and checkbox is unchecked
+        seriesVisibility["windGust"] = false;
+        const windGustCheckbox = document.querySelector(`input[data-series="windGust"]`);
+        if (windGustCheckbox) {
+          windGustCheckbox.checked = false;
+        }
+      }
+      
+      // Remove from selection order
+      const index = selectionOrder.indexOf(mainCategory);
+      if (index !== -1) {
+        selectionOrder.splice(index, 1);
+      }
+    }
+  }
+  
+  updateSeriesVisibility();
+  // Update legend availability after toggling
+  updateLegendAvailability();
 }
 
 function showError(error) {
@@ -179,10 +504,11 @@ function showError(error) {
 }
 
 async function fetchWeatherData() {
-  const [humidityResponse, weatherResponse, windDailyResponse] = await Promise.all([
+  const [humidityResponse, weatherResponse, windDailyResponse, windDirectionResponse] = await Promise.all([
     fetch("humidity-daily.csv"),
     fetch("weather-day.csv"),
     fetch("wind-daily.csv"),
+    fetch("wind-direction-daily.csv"),
   ]);
 
   if (!humidityResponse.ok) {
@@ -194,17 +520,22 @@ async function fetchWeatherData() {
   if (!windDailyResponse.ok) {
     throw new Error(`Failed to load wind data (${windDailyResponse.status})`);
   }
+  if (!windDirectionResponse.ok) {
+    throw new Error(`Failed to load wind direction data (${windDirectionResponse.status})`);
+  }
 
-  const [humidityText, weatherText, windDailyText] = await Promise.all([
+  const [humidityText, weatherText, windDailyText, windDirectionText] = await Promise.all([
     humidityResponse.text(),
     weatherResponse.text(),
     windDailyResponse.text(),
+    windDirectionResponse.text(),
   ]);
 
   return {
     humidity: parseHumidityDailyCsv(humidityText),
     weather: parseWeatherDailyCsv(weatherText),
     windDaily: parseWindDailyCsv(windDailyText),
+    windDirection: parseWindDirectionDailyCsv(windDirectionText),
   };
 }
 
@@ -214,6 +545,9 @@ function transformWeatherData(raw) {
   );
   const windDailyByDate = new Map(
     (raw.windDaily || []).map((entry) => [entry.date, entry])
+  );
+  const windDirectionByDate = new Map(
+    (raw.windDirection || []).map((entry) => [entry.date, entry])
   );
 
   const results = (raw.weather || []).map((day) => {
@@ -228,11 +562,15 @@ function transformWeatherData(raw) {
     const tempMax = day.temperatureMax;
     const tempMean = computeMean([tempMin, tempMax]);
 
-    const windDaily = windDailyByDate.get(day.date) ?? { min: null, max: null };
+    const windDaily = windDailyByDate.get(day.date) ?? { min: null, max: null, mean: null };
     const windRange = {
       min: windDaily.min ?? null,
       max: windDaily.max ?? null,
+      mean: windDaily.mean ?? null,
     };
+
+    const windDirectionData = windDirectionByDate.get(day.date);
+    const windDirection = windDirectionData?.mean ?? null;
 
     return {
       date,
@@ -245,6 +583,7 @@ function transformWeatherData(raw) {
       humidity,
       windRange,
       windGust: typeof day.windGustMax === "number" ? day.windGustMax : null,
+      windDirection,
       precipitation: day.precipitationSum,
       daylightHours:
         typeof day.sunshineSeconds === "number"
@@ -287,6 +626,15 @@ function parseWindDailyCsv(text) {
     date: row.date,
     min: parseNumber(row.wind_speed_min_km_h),
     max: parseNumber(row.wind_speed_max_km_h),
+    mean: parseNumber(row.wind_speed_mean_km_h),
+  }));
+}
+
+function parseWindDirectionDailyCsv(text) {
+  const dataSection = extractDataSection(text, "date,");
+  return d3.csvParse(dataSection, (row) => ({
+    date: row.date,
+    mean: parseNumber(row["wind_direction_mean_10m (°)"]),
   }));
 }
 
@@ -364,17 +712,24 @@ function buildLegends(chartContainer) {
   const renderLegendContent = (legend) => {
     legend.innerHTML = "";
     METRIC_DEFS.forEach((metric) => {
+      // Hide windDirection from legend since it's combined with windRange
+      if (metric.id === "windDirection") {
+        return;
+      }
+      
       const item = document.createElement("button");
       item.className = "legend-item";
       item.dataset.series = metric.id;
       item.style.setProperty("--series-color", metric.color);
       item.textContent = metric.label;
       item.addEventListener("click", () => {
-        seriesVisibility[metric.id] = !seriesVisibility[metric.id];
-        updateSeriesVisibility();
+        const newState = !seriesVisibility[metric.id];
+        handleMetricToggle(metric.id, newState);
       });
       legend.appendChild(item);
     });
+    // Update availability after rendering
+    updateLegendAvailability();
   };
 
   Object.values(legends).forEach(renderLegendContent);
@@ -510,6 +865,7 @@ function renderChart(chart) {
 
         drawAxes(chartG, innerHeight, innerWidth, xScale, yScales, activeAxes);
         drawGrid(chartG, innerWidth, innerHeight, xScale);
+        drawWindDirection(chartG, dataset, xScale, innerHeight);
         drawBars(chartG, dataset, xScale, yScales, innerHeight, innerWidth);
         drawRangeSeries(chartG, dataset, xScale, yScales);
         drawLineSeries(chartG, dataset, xScale, yScales);
@@ -538,6 +894,7 @@ function renderChart(chart) {
           activeAxes
         );
         drawGrid(chartG, innerWidth, gradientInnerHeight, xScale);
+        drawWindDirection(chartG, dataset, xScale, gradientInnerHeight);
         drawBars(
           chartG,
           dataset,
@@ -628,6 +985,7 @@ function computeGroupDomains(dataset) {
   const windRangeValues = dataset.flatMap((d) => [
     d.windRange?.min ?? null,
     d.windRange?.max ?? null,
+    d.windRange?.mean ?? null,
   ]);
   const windGustValues = dataset.map((d) => d.windGust ?? null);
   const windValues = [...windRangeValues, ...windGustValues];
@@ -660,35 +1018,43 @@ function computeExtent(values, defaultDomain) {
 }
 
 function getActiveAxes() {
-  const active = new Set();
-
-  METRIC_DEFS.forEach((metric) => {
-    if (!seriesVisibility[metric.id]) {
-      return;
-    }
-    if (metric.axis) {
-      active.add(metric.axis);
-    }
-  });
-
+  // Max 2 axes total: First = left axis, Second = right axis
+  // Third selection uses right axis scale but doesn't get its own axis
   const left = [];
   const right = [];
-
-  AXIS_ORDER.forEach((axisId) => {
-    if (!active.has(axisId)) {
-      return;
-    }
-    const config = AXIS_CONFIG[axisId];
-    if (!config) {
-      return;
-    }
-    if (config.side === "left") {
-      left.push(axisId);
+  
+  if (selectionOrder.length === 0) {
+    return { left, right };
+  }
+  
+  // Get first selection (left axis) - dynamic placement
+  if (selectionOrder.length >= 1) {
+    const first = selectionOrder[0];
+    if (first === "wind") {
+      left.push("wind");
     } else {
-      right.push(axisId);
+      const metric = METRIC_DEFS.find(m => m.id === first);
+      if (metric && metric.axis) {
+        left.push(metric.axis);
+      }
     }
-  });
-
+  }
+  
+  // Get second selection (right axis) - dynamic placement
+  if (selectionOrder.length >= 2) {
+    const second = selectionOrder[1];
+    if (second === "wind") {
+      right.push("wind");
+    } else {
+      const metric = METRIC_DEFS.find(m => m.id === second);
+      if (metric && metric.axis) {
+        right.push(metric.axis);
+      }
+    }
+  }
+  
+  // Third selection does NOT get its own axis - it uses the right axis scale
+  
   return { left, right };
 }
 
@@ -719,15 +1085,15 @@ function drawAxes(chartG, innerHeight, innerWidth, xScale, yScales, activeAxes) 
     .attr("transform", "rotate(-35)")
     .style("text-anchor", "end");
 
-  const drawAxis = (axisId, index) => {
+  const drawAxis = (axisId, side, index) => {
     const config = AXIS_CONFIG[axisId];
     const scale = yScales[axisId];
     if (!config || !scale) {
       return;
     }
 
-    const axisGenerator =
-      config.side === "left" ? d3.axisLeft(scale) : d3.axisRight(scale);
+    // Use dynamic side assignment instead of config.side
+    const axisGenerator = side === "left" ? d3.axisLeft(scale) : d3.axisRight(scale);
 
     if (config.ticks != null) {
       axisGenerator.ticks(config.ticks);
@@ -736,22 +1102,21 @@ function drawAxes(chartG, innerHeight, innerWidth, xScale, yScales, activeAxes) 
       axisGenerator.tickFormat(config.format);
     }
 
-    const offset =
-      config.side === "left" ? -AXIS_GAP * index : AXIS_GAP * index;
+    const offset = side === "left" ? -AXIS_GAP * index : AXIS_GAP * index;
 
     chartG
       .append("g")
       .attr("class", `axis axis--${axisId}`)
       .attr(
         "transform",
-        config.side === "left"
+        side === "left"
           ? `translate(${offset},0)`
           : `translate(${innerWidth + offset},0)`
       )
       .call(axisGenerator);
 
     const labelX =
-      config.side === "left"
+      side === "left"
         ? -AXIS_LABEL_OFFSET - AXIS_GAP * index
         : innerWidth + AXIS_LABEL_OFFSET + AXIS_GAP * index;
     const labelY = innerHeight / 2;
@@ -759,8 +1124,8 @@ function drawAxes(chartG, innerHeight, innerWidth, xScale, yScales, activeAxes) 
     // axis titles intentionally hidden
   };
 
-  activeAxes.left.forEach((axisId, index) => drawAxis(axisId, index));
-  activeAxes.right.forEach((axisId, index) => drawAxis(axisId, index));
+  activeAxes.left.forEach((axisId, index) => drawAxis(axisId, "left", index));
+  activeAxes.right.forEach((axisId, index) => drawAxis(axisId, "right", index));
 }
 
 function drawGrid(chartG, innerWidth, innerHeight, xScale) {
@@ -781,9 +1146,11 @@ function drawBars(chartG, dataset, xScale, yScales, innerHeight, innerWidth) {
   const barsGroup = chartG.append("g").attr("class", "series-bars");
   const barWidth = Math.max(1, (innerWidth / dataset.length) * 0.7);
 
-  METRIC_DEFS.filter((def) => def.type === "bar").forEach((metric, index) => {
+  METRIC_DEFS.filter((def) => def.type === "bar" && shouldDrawMetric(def.id)).forEach((metric, index) => {
     const offset = index === 0 ? -barWidth / 4 : barWidth / 4;
-    const scale = yScales[metric.axis];
+    const axisInfo = getMetricAxis(metric.id);
+    const axisId = axisInfo ? axisInfo.axis : metric.axis;
+    const scale = yScales[axisId];
     const bar = barsGroup
       .append("g")
       .attr("class", `series series--bar series--${metric.id}`)
@@ -811,11 +1178,53 @@ function drawBars(chartG, dataset, xScale, yScales, innerHeight, innerWidth) {
   });
 }
 
+function drawWindDirection(chartG, dataset, xScale, innerHeight) {
+  const windDirectionMetric = METRIC_DEFS.find((def) => def.type === "windDirection");
+  if (!windDirectionMetric || !shouldDrawMetric(windDirectionMetric.id)) return;
+
+  const windDirectionGroup = chartG.append("g").attr("class", "series-wind-direction");
+  
+  // Position at the top of the chart (y = 0, with some padding)
+  const iconY = -20;
+  const iconSize = 14;
+  
+  // Navigation icon path data (from navigation.svg)
+  const navigationPath = "M11.0212 9.91506L7.35195 2.36117C7.2908 2.23374 7.19487 2.12618 7.07524 2.05089C6.95561 1.97561 6.81713 1.93566 6.67578 1.93566C6.53443 1.93566 6.39596 1.97561 6.27632 2.05089C6.15669 2.12618 6.06077 2.23374 5.99961 2.36117L2.33039 9.91506C2.26051 10.0549 2.23667 10.2132 2.26227 10.3674C2.28787 10.5216 2.36161 10.6638 2.47292 10.7735L2.48286 10.7835C2.5945 10.8956 2.73949 10.9685 2.89607 10.9912C3.05266 11.0139 3.21238 10.9852 3.35128 10.9094L6.67247 9.15271L9.99697 10.9061C10.1363 10.9816 10.2961 11.0104 10.453 10.9884C10.6099 10.9663 10.7556 10.8945 10.8687 10.7835C10.9832 10.6738 11.0597 10.5304 11.0871 10.3742C11.1145 10.2181 11.0914 10.0572 11.0212 9.91506Z";
+  const fillColor = "#002129";
+
+  const icons = windDirectionGroup
+    .selectAll("g.wind-direction-icon")
+    .data(dataset)
+    .join("g")
+    .attr("class", "wind-direction-icon")
+    .attr("data-series", windDirectionMetric.id)
+    .attr("transform", (d) => {
+      const x = xScale(d.date);
+      const direction = windDirectionMetric.accessors.value(d);
+      // Rotate based on wind direction (wind direction is where wind comes FROM)
+      // Icon points north (0°), so we rotate it to point in the wind direction
+      const rotation = typeof direction === "number" ? direction : 0;
+      return `translate(${x}, ${iconY}) rotate(${rotation} 0 0)`;
+    })
+    .style("opacity", (d) => {
+      const direction = windDirectionMetric.accessors.value(d);
+      return typeof direction === "number" ? 0.8 : 0;
+    });
+
+  icons
+    .append("path")
+    .attr("d", navigationPath)
+    .attr("fill", fillColor)
+    .attr("transform", `translate(-${iconSize / 2}, -${iconSize / 2})`);
+}
+
 function drawRangeSeries(chartG, dataset, xScale, yScales) {
   const rangesGroup = chartG.append("g").attr("class", "series-ranges");
 
-  METRIC_DEFS.filter((def) => def.type === "range").forEach((metric) => {
-    const scale = yScales[metric.axis];
+  METRIC_DEFS.filter((def) => def.type === "range" && shouldDrawMetric(def.id)).forEach((metric) => {
+    const axisInfo = getMetricAxis(metric.id);
+    const axisId = axisInfo ? axisInfo.axis : metric.axis;
+    const scale = yScales[axisId];
     const group = rangesGroup
       .append("g")
       .attr("class", `series series--range series--${metric.id}`)
@@ -838,7 +1247,7 @@ function drawRangeSeries(chartG, dataset, xScale, yScales) {
       .datum(dataset)
       .attr("class", "range-area")
       .attr("fill", metric.color)
-      .attr("fill-opacity", 0.15)
+      .attr("fill-opacity", 0.07)
       .attr("stroke", "none")
       .attr("d", areaGenerator);
 
@@ -890,7 +1299,7 @@ function drawRangeSeries(chartG, dataset, xScale, yScales) {
         .attr("class", "range-line range-line--mean")
         .attr("fill", "none")
         .attr("stroke", metric.color)
-        .attr("stroke-width", 1)
+        .attr("stroke-width", 2)
         .attr("d", meanLine);
     }
   });
@@ -899,8 +1308,10 @@ function drawRangeSeries(chartG, dataset, xScale, yScales) {
 function drawLineSeries(chartG, dataset, xScale, yScales) {
   const linesGroup = chartG.append("g").attr("class", "series-lines");
 
-  METRIC_DEFS.filter((def) => def.type === "line").forEach((metric) => {
-    const scale = yScales[metric.axis];
+  METRIC_DEFS.filter((def) => def.type === "line" && shouldDrawMetric(def.id)).forEach((metric) => {
+    const axisInfo = getMetricAxis(metric.id);
+    const axisId = axisInfo ? axisInfo.axis : metric.axis;
+    const scale = yScales[axisId];
     if (!scale || typeof metric.accessors.value !== "function") {
       return;
     }
@@ -944,8 +1355,10 @@ function drawGradientRangeSeries(
     ? svg.insert("defs", ":first-child")
     : svg.select("defs");
 
-  METRIC_DEFS.filter((def) => def.type === "range").forEach((metric) => {
-    const scale = yScales[metric.axis];
+  METRIC_DEFS.filter((def) => def.type === "range" && shouldDrawMetric(def.id)).forEach((metric) => {
+    const axisInfo = getMetricAxis(metric.id);
+    const axisId = axisInfo ? axisInfo.axis : metric.axis;
+    const scale = yScales[axisId];
     const gradientId = `series-gradient-${layerKey}-${metric.id}`;
     const gradientStops =
       RANGE_GRADIENT_DEFS[metric.id] ??
@@ -1047,7 +1460,7 @@ function drawGradientRangeSeries(
         .attr("class", "range-line range-line--mean")
         .attr("fill", "none")
         .attr("stroke", metric.color)
-        .attr("stroke-width", 1)
+        .attr("stroke-width", 2)
         .attr("d", meanLine);
     }
   });
@@ -1217,6 +1630,35 @@ function createFocusLayer(chartG, xScale, yScales, innerHeight, layerKey) {
   };
 }
 
+// Convert wind direction degrees to cardinal direction (N, NE, E, SE, S, SW, W, NW)
+function degreesToCardinal(degrees) {
+  if (typeof degrees !== "number" || isNaN(degrees)) return null;
+  
+  // Normalize to 0-360
+  const normalized = ((degrees % 360) + 360) % 360;
+  
+  // Map to 8 main directions
+  // N: 337.5-22.5, NE: 22.5-67.5, E: 67.5-112.5, SE: 112.5-157.5
+  // S: 157.5-202.5, SW: 202.5-247.5, W: 247.5-292.5, NW: 292.5-337.5
+  if (normalized >= 337.5 || normalized < 22.5) {
+    return "N";
+  } else if (normalized >= 22.5 && normalized < 67.5) {
+    return "NE";
+  } else if (normalized >= 67.5 && normalized < 112.5) {
+    return "E";
+  } else if (normalized >= 112.5 && normalized < 157.5) {
+    return "SE";
+  } else if (normalized >= 157.5 && normalized < 202.5) {
+    return "S";
+  } else if (normalized >= 202.5 && normalized < 247.5) {
+    return "SW";
+  } else if (normalized >= 247.5 && normalized < 292.5) {
+    return "W";
+  } else {
+    return "NW";
+  }
+}
+
 function updateTooltip(datum, pointer, layout, tooltipEl) {
   if (!tooltipEl || !datum) return;
   const { x } = pointer;
@@ -1225,76 +1667,175 @@ function updateTooltip(datum, pointer, layout, tooltipEl) {
   const activeMetrics = METRIC_DEFS.filter(
     (metric) => seriesVisibility[metric.id]
   );
-  const lines = activeMetrics
-    .map((metric) => {
-      if (metric.type === "range") {
-        const minAccessor = metric.accessors.min;
-        const maxAccessor = metric.accessors.max;
-        const meanAccessor = metric.accessors.mean;
-        const min =
-          typeof minAccessor === "function" ? minAccessor(datum) : null;
-        const max =
-          typeof maxAccessor === "function" ? maxAccessor(datum) : null;
-        const mean =
-          typeof meanAccessor === "function" ? meanAccessor(datum) : null;
+  
+  // Group metrics by category for better organization
+  const metricGroups = {
+    temperature: null,
+    humidity: null,
+    wind: [],
+    precipitation: null,
+    daylight: null,
+  };
+  
+  activeMetrics.forEach((metric) => {
+    if (metric.type === "range") {
+      const minAccessor = metric.accessors.min;
+      const maxAccessor = metric.accessors.max;
+      const meanAccessor = metric.accessors.mean;
+      const min =
+        typeof minAccessor === "function" ? minAccessor(datum) : null;
+      const max =
+        typeof maxAccessor === "function" ? maxAccessor(datum) : null;
+      const mean =
+        typeof meanAccessor === "function" ? meanAccessor(datum) : null;
 
-        const meanStr = formatValue(mean, metric.units);
-        const minStr = formatValue(min, metric.units);
-        const maxStr = formatValue(max, metric.units);
+      const meanStr = formatValue(mean, metric.units);
+      const minStr = formatValue(min, metric.units);
+      const maxStr = formatValue(max, metric.units);
 
-        const segments = [];
-        if (meanStr) {
-          segments.push(`Mean <strong>${meanStr}</strong>`);
-        }
-        if (minStr || maxStr) {
-          segments.push(
-            `Min ${minStr ?? "–"} · Max ${maxStr ?? "–"}`
-          );
-        }
-
-        if (!segments.length) {
-          return null;
-        }
-
-        return `<span class="tooltip-series" style="--series-color:${metric.color}">
-          ${metric.label}: ${segments.join(" · ")}
-        </span>`;
+      if (metric.id === "temperature") {
+        metricGroups.temperature = { metric, mean: meanStr, min: minStr, max: maxStr };
+      } else if (metric.id === "humidity") {
+        metricGroups.humidity = { metric, mean: meanStr, min: minStr, max: maxStr };
+      } else if (metric.id === "windRange") {
+        metricGroups.wind.push({ metric, mean: meanStr, min: minStr, max: maxStr, type: "range" });
       }
+    }
 
-      if (metric.type === "bar") {
-        const value = metric.accessors.value(datum);
-        const valueStr = formatValue(value, metric.units);
-        if (!valueStr) {
-          return null;
+    if (metric.type === "bar") {
+      const value = metric.accessors.value(datum);
+      const valueStr = formatValue(value, metric.units);
+      if (valueStr) {
+        if (metric.id === "precipitation") {
+          metricGroups.precipitation = { metric, value: valueStr };
+        } else if (metric.id === "daylight") {
+          metricGroups.daylight = { metric, value: valueStr };
         }
-        return `<span class="tooltip-series" style="--series-color:${metric.color}">
-          ${metric.label}: <strong>${valueStr}</strong>
-        </span>`;
       }
+    }
 
-      if (metric.type === "line") {
-        const accessor = metric.accessors.value;
-        if (typeof accessor !== "function") {
-          return null;
-        }
+    if (metric.type === "line") {
+      const accessor = metric.accessors.value;
+      if (typeof accessor === "function") {
         const value = accessor(datum);
         const valueStr = formatValue(value, metric.units);
-        if (!valueStr) {
-          return null;
+        if (valueStr && metric.id === "windGust") {
+          metricGroups.wind.push({ metric, value: valueStr, type: "line" });
         }
-        return `<span class="tooltip-series" style="--series-color:${metric.color}">
-          ${metric.label}: <strong>${valueStr}</strong>
-        </span>`;
       }
+    }
 
-      return null;
-    })
-    .filter(Boolean)
-    .join("");
+    if (metric.type === "windDirection") {
+      const accessor = metric.accessors.value;
+      if (typeof accessor === "function") {
+        const value = accessor(datum);
+        if (typeof value === "number") {
+          const cardinal = degreesToCardinal(value);
+          metricGroups.wind.push({ metric, direction: cardinal, degrees: value, type: "direction" });
+        }
+      }
+    }
+  });
+
+  // Build tooltip HTML with new layout: color | mean | min/max
+  const tooltipItems = [];
+  
+  if (metricGroups.temperature) {
+    const { metric, mean, min, max } = metricGroups.temperature;
+    tooltipItems.push(`
+      <div class="tooltip-series" style="--series-color:${metric.color}">
+        <div class="tooltip-col-label">
+          <span class="tooltip-item-label">${metric.label}</span>
+        </div>
+        <div class="tooltip-col-mean">
+          ${mean ? `<strong>${mean}</strong>` : '–'}
+        </div>
+        <div class="tooltip-col-minmax">
+          ${min ? `<div>Min ${min}</div>` : ''}
+          ${max ? `<div>Max ${max}</div>` : ''}
+        </div>
+      </div>
+    `);
+  }
+  
+  if (metricGroups.humidity) {
+    const { metric, mean, min, max } = metricGroups.humidity;
+    tooltipItems.push(`
+      <div class="tooltip-series" style="--series-color:${metric.color}">
+        <div class="tooltip-col-label">
+          <span class="tooltip-item-label">${metric.label}</span>
+        </div>
+        <div class="tooltip-col-mean">
+          ${mean ? `<strong>${mean}</strong>` : '–'}
+        </div>
+        <div class="tooltip-col-minmax">
+          ${min ? `<div>Min ${min}</div>` : ''}
+          ${max ? `<div>Max ${max}</div>` : ''}
+        </div>
+      </div>
+    `);
+  }
+  
+  if (metricGroups.wind.length > 0) {
+    const windRange = metricGroups.wind.find(w => w.type === "range");
+    const windGust = metricGroups.wind.find(w => w.type === "line");
+    const windDirection = metricGroups.wind.find(w => w.type === "direction");
+    const windMetric = windRange?.metric || windGust?.metric || METRIC_DEFS.find(m => m.id === "windRange");
+    
+    tooltipItems.push(`
+      <div class="tooltip-series" style="--series-color:${windMetric?.color || "#8e44ad"}">
+        <div class="tooltip-col-label">
+          <span class="tooltip-color-indicator"></span>
+          <span class="tooltip-item-label">Wind</span>
+        </div>
+        <div class="tooltip-col-mean">
+          ${windRange?.mean ? `<strong>${windRange.mean}</strong>` : '–'}
+        </div>
+        <div class="tooltip-col-minmax">
+          ${windRange?.min ? `<div>Min ${windRange.min}</div>` : ''}
+          ${windRange?.max ? `<div>Max ${windRange.max}</div>` : ''}
+          ${windGust?.value ? `<div>Gust ${windGust.value}</div>` : ''}
+          ${windDirection?.direction ? `<div>Direction ${windDirection.direction}</div>` : ''}
+        </div>
+      </div>
+    `);
+  }
+  
+  if (metricGroups.daylight) {
+    const { metric, value } = metricGroups.daylight;
+    tooltipItems.push(`
+      <div class="tooltip-series" style="--series-color:${metric.color}">
+        <div class="tooltip-col-label">
+          <span class="tooltip-item-label">${metric.label}</span>
+        </div>
+        <div class="tooltip-col-mean">
+          ${value ? `<strong>${value}</strong>` : '–'}
+        </div>
+        <div class="tooltip-col-minmax">
+        </div>
+      </div>
+    `);
+  }
+  
+  if (metricGroups.precipitation) {
+    const { metric, value } = metricGroups.precipitation;
+    tooltipItems.push(`
+      <div class="tooltip-series" style="--series-color:${metric.color}">
+        <div class="tooltip-col-label">
+          <span class="tooltip-item-label">${metric.label}</span>
+        </div>
+        <div class="tooltip-col-mean">
+          ${value ? `<strong>${value}</strong>` : '–'}
+        </div>
+        <div class="tooltip-col-minmax">
+        </div>
+      </div>
+    `);
+  }
 
   tooltipEl.innerHTML = `
     <div class="tooltip-header">${d3.timeFormat("%B %d, %Y")(datum.date)}</div>
-    ${lines || "<span class='tooltip-empty'>No series active</span>"}
+    ${tooltipItems.length > 0 ? tooltipItems.join("") : "<span class='tooltip-empty'>No series active</span>"}
   `;
 
   tooltipEl.hidden = false;
@@ -1330,6 +1871,16 @@ function applySeriesVisibility() {
       const hidden = !seriesVisibility[metric.id];
       if (node instanceof HTMLInputElement) {
         node.checked = !hidden;
+        // If windRange or windDirection, sync the other one's checkbox too
+        if (WIND_RANGE_GROUP.has(metric.id)) {
+          const otherId = metric.id === "windRange" ? "windDirection" : "windRange";
+          const otherNodes = document.querySelectorAll(`[data-series="${otherId}"]`);
+          otherNodes.forEach((otherNode) => {
+            if (otherNode instanceof HTMLInputElement) {
+              otherNode.checked = !hidden;
+            }
+          });
+        }
         return;
       }
       if (node instanceof HTMLButtonElement) {
@@ -1341,6 +1892,30 @@ function applySeriesVisibility() {
       }
       if ("style" in node) {
         node.style.display = hidden ? "none" : null;
+      }
+    });
+  });
+  // Update legend availability after visibility changes
+  updateLegendAvailability();
+}
+
+function updateLegendAvailability() {
+  METRIC_DEFS.forEach((metric) => {
+    const canSelect = canSelectMetric(metric.id);
+    const nodes = document.querySelectorAll(`[data-series="${metric.id}"]`);
+    nodes.forEach((node) => {
+      if (node instanceof HTMLButtonElement) {
+        // Hide if can't be selected and not already selected
+        const shouldHide = !canSelect && !seriesVisibility[metric.id];
+        node.style.display = shouldHide ? "none" : "";
+        // Also disable/enable the button
+        node.disabled = !canSelect && !seriesVisibility[metric.id];
+        
+        // Special case: windGust should be hidden when wind is not selected
+        if (metric.id === "windGust" && !isMainCategorySelected("wind")) {
+          node.style.display = "none";
+          node.disabled = true;
+        }
       }
     });
   });
