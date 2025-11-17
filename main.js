@@ -113,7 +113,7 @@ const AXIS_LABELS = {
   daylight: "Daylight (hours)",
 };
 
-const DEFAULT_VISIBLE_SERIES = new Set(["temperature"]);
+const DEFAULT_VISIBLE_SERIES = new Set([]);
 
 const seriesVisibility = METRIC_DEFS.reduce((acc, def) => {
   acc[def.id] = DEFAULT_VISIBLE_SERIES.has(def.id);
@@ -340,8 +340,8 @@ function attachControlHandlers() {
     'input[type="checkbox"][data-series]'
   );
   
-  // Initialize selection order with default visible series
-  selectionOrder = ["temperature"];
+  // Initialize selection order with no default selection
+  selectionOrder = [];
   
   checkboxes.forEach((checkbox) => {
     const seriesId = checkbox.dataset.series;
@@ -356,13 +356,13 @@ function attachControlHandlers() {
   const resetBtn = document.getElementById("resetSelections");
   if (resetBtn) {
     resetBtn.addEventListener("click", () => {
-      // Reset to just temperature
+      // Reset to no selection
       Object.keys(seriesVisibility).forEach((id) => {
-        seriesVisibility[id] = id === "temperature";
+        seriesVisibility[id] = false;
       });
-      selectionOrder = ["temperature"];
+      selectionOrder = [];
       checkboxes.forEach((checkbox) => {
-        checkbox.checked = checkbox.dataset.series === "temperature";
+        checkbox.checked = false;
       });
       updateSeriesVisibility();
     });
