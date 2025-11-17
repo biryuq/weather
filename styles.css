@@ -192,6 +192,11 @@ svg {
   cursor: crosshair;
 }
 
+.wind-direction-icon {
+  z-index: 5;
+  pointer-events: none;
+}
+
 .error {
   padding: 2rem;
   border-radius: 1rem;

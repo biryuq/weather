@@ -4,7 +4,7 @@ const METRIC_DEFS = [
   {
     id: "temperature",
     label: "Temperature",
-    color: "#ff7f0e",
+    color: "#E16A01",
     type: "range",
     axis: "temperature",
     accessors: {
@@ -17,7 +17,7 @@ const METRIC_DEFS = [
   {
     id: "humidity",
     label: "Humidity",
-    color: "#2ca02c",
+    color: "#1E7D1E",
     type: "range",
     axis: "humidity",
     accessors: {
@@ -43,7 +43,7 @@ const METRIC_DEFS = [
   {
     id: "windGust",
     label: "Wind Gust",
-    color: "#8547A0",
+    color: "#BC70DD",
     type: "line",
     axis: "wind",
     accessors: {
@@ -51,13 +51,13 @@ const METRIC_DEFS = [
     },
     units: " km/h",
     options: {
-      strokeDasharray: "6 3",
+      strokeDasharray: "6 6",
     },
   },
   {
     id: "precipitation",
     label: "Precipitation",
-    color: "#1f78b4",
+    color: "#055991",
     type: "bar",
     axis: "precipitation",
     accessors: {
@@ -68,7 +68,7 @@ const METRIC_DEFS = [
   {
     id: "daylight",
     label: "Daylight",
-    color: "#D09F0C",
+    color: "#E5B300",
     type: "bar",
     axis: "daylight",
     accessors: {
@@ -79,7 +79,7 @@ const METRIC_DEFS = [
   {
     id: "windDirection",
     label: "Wind Direction",
-    color: "#002129",
+    color: "#BBBBBB",
     type: "windDirection",
     axis: null,
     accessors: {
@@ -175,6 +175,18 @@ function isMainCategorySelected(categoryId) {
   return metrics.some(metricId => seriesVisibility[metricId]);
 }
 
+// Get count of selected range/line types (temperature, humidity, wind)
+function getSelectedRangeLineCount() {
+  const rangeLineCategories = ["temperature", "humidity", "wind"];
+  return rangeLineCategories.filter(cat => isMainCategorySelected(cat)).length;
+}
+
+// Get count of selected bar types (precipitation, daylight)
+function getSelectedBarCount() {
+  const barCategories = ["precipitation", "daylight"];
+  return barCategories.filter(cat => isMainCategorySelected(cat)).length;
+}
+
 // Check if a metric can be selected (not at max 3 categories)
 function canSelectMetric(metricId) {
   const mainCategory = getMainCategory(metricId);
@@ -203,9 +215,43 @@ function canSelectMetric(metricId) {
     return true;
   }
   
-  // If at max 3 categories and this is a new category, can't select
-  if (currentMainCategoryCount >= 3 && !isMainCategorySelected(mainCategory)) {
-    return false;
+  // Check type constraints: max 2 range/line + 1 bar OR max 2 bar + 1 range/line
+  const metric = METRIC_DEFS.find(m => m.id === metricId);
+  if (!metric) return false;
+  
+  // For wind sub-values, check if wind category can be selected
+  if (isWindSubValue && !isMainCategorySelected("wind")) {
+    const rangeCount = getSelectedRangeLineCount();
+    const barCount = getSelectedBarCount();
+    
+    // Wind is a range/line type - can select if: (rangeCount < 2 && barCount <= 1) OR (rangeCount < 1 && barCount <= 2)
+    // This allows: max 2 range/line + 1 bar OR max 2 bar + 1 range/line
+    if (!((rangeCount < 2 && barCount <= 1) || (rangeCount < 1 && barCount <= 2))) {
+      return false;
+    }
+  }
+  
+  // For main category metrics, check type constraints
+  if (!isWindSubValue) {
+    const rangeCount = getSelectedRangeLineCount();
+    const barCount = getSelectedBarCount();
+    
+    // If this is a range/line type (temperature, humidity, wind)
+    if (mainCategory === "temperature" || mainCategory === "humidity" || mainCategory === "wind") {
+      // Can select if: (rangeCount < 2 && barCount <= 1) OR (rangeCount < 1 && barCount <= 2)
+      // This allows: max 2 range/line + 1 bar OR max 2 bar + 1 range/line
+      if (!((rangeCount < 2 && barCount <= 1) || (rangeCount < 1 && barCount <= 2))) {
+        return false;
+      }
+    }
+    // If this is a bar type (precipitation, daylight)
+    else if (mainCategory === "precipitation" || mainCategory === "daylight") {
+      // Can select if: (rangeCount <= 2 && barCount < 1) OR (rangeCount <= 1 && barCount < 2)
+      // This allows: max 2 range/line + 1 bar OR max 2 bar + 1 range/line
+      if (!((rangeCount <= 2 && barCount < 1) || (rangeCount <= 1 && barCount < 2))) {
+        return false;
+      }
+    }
   }
   
   return true;
@@ -382,8 +428,13 @@ function handleMetricToggle(metricId, isChecked) {
       const windSelected = isMainCategorySelected("wind");
       if (!windSelected) {
         // Can't select wind sub-values if wind category isn't selected
-        // First check if we can add wind as a main category
-        if (currentMainCategoryCount >= 3) {
+        // Check type constraints: max 2 range/line + 1 bar OR max 2 bar + 1 range/line
+        const rangeCount = getSelectedRangeLineCount();
+        const barCount = getSelectedBarCount();
+        
+        // Wind is a range/line type - can select if: (rangeCount < 2 && barCount <= 1) OR (rangeCount < 1 && barCount <= 2)
+        // This allows: max 2 range/line + 1 bar OR max 2 bar + 1 range/line
+        if (!((rangeCount < 2 && barCount <= 1) || (rangeCount < 1 && barCount <= 2))) {
           const checkbox = document.querySelector(`input[data-series="${metricId}"]`);
           if (checkbox) {
             checkbox.checked = false;
@@ -416,13 +467,33 @@ function handleMetricToggle(metricId, isChecked) {
       }
     } else {
       // Toggling a main category metric
-      if (currentMainCategoryCount >= 3 && !isMainCategorySelected(mainCategory)) {
-        // Can't add more main categories
-        const checkbox = document.querySelector(`input[data-series="${metricId}"]`);
-        if (checkbox) {
-          checkbox.checked = false;
+      // Check type constraints: max 2 range/line + 1 bar OR max 2 bar + 1 range/line
+      const rangeCount = getSelectedRangeLineCount();
+      const barCount = getSelectedBarCount();
+      
+      // If this is a range/line type (temperature, humidity, wind)
+      if (mainCategory === "temperature" || mainCategory === "humidity" || mainCategory === "wind") {
+        // Can select if: (rangeCount < 2 && barCount <= 1) OR (rangeCount < 1 && barCount <= 2)
+        // This allows: max 2 range/line + 1 bar OR max 2 bar + 1 range/line
+        if (!((rangeCount < 2 && barCount <= 1) || (rangeCount < 1 && barCount <= 2))) {
+          const checkbox = document.querySelector(`input[data-series="${metricId}"]`);
+          if (checkbox) {
+            checkbox.checked = false;
+          }
+          return;
         }
-        return;
+      }
+      // If this is a bar type (precipitation, daylight)
+      else if (mainCategory === "precipitation" || mainCategory === "daylight") {
+        // Can select if: (rangeCount <= 2 && barCount < 1) OR (rangeCount <= 1 && barCount < 2)
+        // This allows: max 2 range/line + 1 bar OR max 2 bar + 1 range/line
+        if (!((rangeCount <= 2 && barCount < 1) || (rangeCount <= 1 && barCount < 2))) {
+          const checkbox = document.querySelector(`input[data-series="${metricId}"]`);
+          if (checkbox) {
+            checkbox.checked = false;
+          }
+          return;
+        }
       }
       
       // Add to selection order if it's a new category
@@ -865,10 +936,10 @@ function renderChart(chart) {
 
         drawAxes(chartG, innerHeight, innerWidth, xScale, yScales, activeAxes);
         drawGrid(chartG, innerWidth, innerHeight, xScale);
-        drawWindDirection(chartG, dataset, xScale, innerHeight);
         drawBars(chartG, dataset, xScale, yScales, innerHeight, innerWidth);
         drawRangeSeries(chartG, dataset, xScale, yScales);
         drawLineSeries(chartG, dataset, xScale, yScales);
+        drawWindDirection(chartG, dataset, xScale, innerHeight);
         return {
           chartG,
           innerHeight,
@@ -894,7 +965,6 @@ function renderChart(chart) {
           activeAxes
         );
         drawGrid(chartG, innerWidth, gradientInnerHeight, xScale);
-        drawWindDirection(chartG, dataset, xScale, gradientInnerHeight);
         drawBars(
           chartG,
           dataset,
@@ -903,6 +973,7 @@ function renderChart(chart) {
           gradientInnerHeight,
           innerWidth
         );
+        drawWindDirection(chartG, dataset, xScale, gradientInnerHeight);
         drawGradientRangeSeries(
           svgLayer,
           chartG,
@@ -1190,7 +1261,7 @@ function drawWindDirection(chartG, dataset, xScale, innerHeight) {
   
   // Navigation icon path data (from navigation.svg)
   const navigationPath = "M11.0212 9.91506L7.35195 2.36117C7.2908 2.23374 7.19487 2.12618 7.07524 2.05089C6.95561 1.97561 6.81713 1.93566 6.67578 1.93566C6.53443 1.93566 6.39596 1.97561 6.27632 2.05089C6.15669 2.12618 6.06077 2.23374 5.99961 2.36117L2.33039 9.91506C2.26051 10.0549 2.23667 10.2132 2.26227 10.3674C2.28787 10.5216 2.36161 10.6638 2.47292 10.7735L2.48286 10.7835C2.5945 10.8956 2.73949 10.9685 2.89607 10.9912C3.05266 11.0139 3.21238 10.9852 3.35128 10.9094L6.67247 9.15271L9.99697 10.9061C10.1363 10.9816 10.2961 11.0104 10.453 10.9884C10.6099 10.9663 10.7556 10.8945 10.8687 10.7835C10.9832 10.6738 11.0597 10.5304 11.0871 10.3742C11.1145 10.2181 11.0914 10.0572 11.0212 9.91506Z";
-  const fillColor = "#002129";
+  const fillColor = "#C5C5C5";
 
   const icons = windDirectionGroup
     .selectAll("g.wind-direction-icon")
@@ -1198,6 +1269,7 @@ function drawWindDirection(chartG, dataset, xScale, innerHeight) {
     .join("g")
     .attr("class", "wind-direction-icon")
     .attr("data-series", windDirectionMetric.id)
+    .attr("data-date", (d) => d.isoDate)
     .attr("transform", (d) => {
       const x = xScale(d.date);
       const direction = windDirectionMetric.accessors.value(d);
@@ -1215,6 +1287,7 @@ function drawWindDirection(chartG, dataset, xScale, innerHeight) {
     .append("path")
     .attr("d", navigationPath)
     .attr("fill", fillColor)
+    .attr("class", "wind-direction-path")
     .attr("transform", `translate(-${iconSize / 2}, -${iconSize / 2})`);
 }
 
@@ -1270,7 +1343,7 @@ function drawRangeSeries(chartG, dataset, xScale, yScales) {
       .attr("fill", "none")
       .attr("stroke", metric.color)
       .attr("stroke-width", 1.2)
-      .attr("stroke-dasharray", "4 3")
+      .attr("stroke-dasharray", "3 2")
       .attr("d", minLine);
 
     group
@@ -1280,7 +1353,7 @@ function drawRangeSeries(chartG, dataset, xScale, yScales) {
       .attr("fill", "none")
       .attr("stroke", metric.color)
       .attr("stroke-width", 1.2)
-      .attr("stroke-dasharray", "4 3")
+      .attr("stroke-dasharray", "3 2")
       .attr("d", maxLine);
 
     const showMeanLine =
@@ -1474,6 +1547,7 @@ function setupLayerInteractions(layerContexts, dataset, xScale, margin, chart) {
   const tooltipMap = getTooltipMap(chart?.container);
   const bisect = d3.bisector((d) => d.date).center;
   const contextByKey = new Map(layerContexts.map((ctx) => [ctx.key, ctx]));
+  const fillColor = "#C5C5C5"; // Light gray for wind direction icons
 
   const focusLayers = layerContexts.map((ctx) =>
     createFocusLayer(ctx.chartG, xScale, ctx.yScales, ctx.innerHeight, ctx.key)
@@ -1508,6 +1582,17 @@ function setupLayerInteractions(layerContexts, dataset, xScale, margin, chart) {
       layer.show();
       layer.update(datum, seriesVisibility);
     });
+
+    // Darken wind direction icon for the hovered day
+    layerContexts.forEach((layerCtx) => {
+      layerCtx.chartG.selectAll("g.wind-direction-icon")
+        .selectAll("path.wind-direction-path")
+        .attr("fill", function() {
+          const iconGroup = d3.select(this.parentNode);
+          const iconDate = iconGroup.attr("data-date");
+          return iconDate === datum.isoDate ? "#666666" : fillColor;
+        });
+    });
   };
 
   const handleLeave = () => {
@@ -1517,6 +1602,13 @@ function setupLayerInteractions(layerContexts, dataset, xScale, margin, chart) {
       }
     });
     focusLayers.forEach((layer) => layer.hide());
+    
+    // Reset wind direction icons to normal color
+    layerContexts.forEach((ctx) => {
+      ctx.chartG.selectAll("g.wind-direction-icon")
+        .selectAll("path.wind-direction-path")
+        .attr("fill", fillColor);
+    });
   };
 
   layerContexts.forEach((ctx) => {
@@ -1847,9 +1939,10 @@ function updateTooltip(datum, pointer, layout, tooltipEl) {
   }
   const containerRect = container.getBoundingClientRect();
   const tooltipWidth = tooltipEl.offsetWidth || 200;
+  const tooltipOffset = 30; // Offset to the right from the hovered day
   const left = Math.min(
     containerRect.width - tooltipWidth - 16,
-    Math.max(16, margin.left + x + 12)
+    Math.max(16, margin.left + x + tooltipOffset)
   );
   tooltipEl.style.left = `${left}px`;
   const top = Math.max(0, layerTop + 16);
